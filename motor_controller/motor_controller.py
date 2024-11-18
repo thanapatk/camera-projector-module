@@ -3,6 +3,8 @@ import time
 from typing import List
 from enum import Enum
 
+from utils.singleton import singleton
+
 
 def sleep(duration):
     start_time = time.perf_counter()
@@ -46,6 +48,7 @@ def activate_motor(func):
     return wrapper
 
 
+@singleton
 class StepperController:
     def __init__(
         self,
@@ -53,6 +56,7 @@ class StepperController:
         step_angle: float,
         degree_range: float,
         micro_stepping: int,
+        home_motor: bool = True,
     ):
         self.pins = pins
         self.step_angle = step_angle
@@ -65,9 +69,10 @@ class StepperController:
         GPIO.setmode(GPIO.BOARD)
         GPIO.setup(pins.get_pins(), GPIO.OUT, initial=GPIO.LOW)
 
-        self.home_motor()
+        if home_motor:
+            self.home_motor()
 
-    def __del__(self):
+    def stop(self):
         GPIO.cleanup()
 
     @property
@@ -145,3 +150,27 @@ class StepperController:
             sleep(1 / f)
 
         self.step = step
+
+    @activate_motor
+    def increment_step(self):
+        if self.step + 1 > self.step_range:
+            raise ValueError("step out of range")
+
+        self.dir = Direction.CCW
+
+        GPIO.output(self.pins.STEP, GPIO.HIGH)
+        GPIO.output(self.pins.STEP, GPIO.LOW)
+
+        self.step += 1
+
+    @activate_motor
+    def decrement_step(self):
+        if self.step - 1 < 0:
+            raise ValueError("step out of range")
+
+        self.dir = Direction.CW
+
+        GPIO.output(self.pins.STEP, GPIO.HIGH)
+        GPIO.output(self.pins.STEP, GPIO.LOW)
+
+        self.step -= 1
