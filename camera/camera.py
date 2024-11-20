@@ -51,6 +51,9 @@ class Camera:
             self.color_sensor.set_option(key, value)
 
     def get_frames(self):
+        """
+        depth_frame, color_frame
+        """
         frames = self.queue.wait_for_frame()
 
         aligned_frames = self.align.process(frames.as_frameset())

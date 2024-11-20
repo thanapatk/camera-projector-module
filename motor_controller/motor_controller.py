@@ -42,7 +42,7 @@ def activate_motor(func):
     def wrapper(self, *args, **kargs):
         self.is_active = True
         result = func(self, *args, **kargs)
-        self.is_active = False
+        self.is_active = True
         return result
 
     return wrapper
@@ -62,6 +62,8 @@ class StepperController:
         self.step_angle = step_angle
         self.micro_stepping = micro_stepping
         self.degree_range = degree_range
+
+        self.__one_degree_step = round(self.micro_stepping / self.step_angle)
 
         self.step_range = int(self.degree_range / self.step_angle * self.micro_stepping)
 
@@ -99,7 +101,7 @@ class StepperController:
         for _ in range(round(self.step_range * 1.25)):
             GPIO.output(self.pins.STEP, GPIO.HIGH)
             GPIO.output(self.pins.STEP, GPIO.LOW)
-            sleep(1 / 500)
+            sleep(1 / 550)
 
         self.is_active = False
         sleep(1)
@@ -124,7 +126,7 @@ class StepperController:
 
     @activate_motor
     def move_to_step(
-        self, step: int, freq: int = 225, acceleration_period: float = 1 / 3
+        self, step: int, freq: int = 550, acceleration_period: float = 1 / 3
     ):
         if not (0 <= step <= self.step_range):
             raise ValueError("step out of range")
@@ -152,25 +154,37 @@ class StepperController:
         self.step = step
 
     @activate_motor
-    def increment_step(self):
-        if self.step + 1 > self.step_range:
+    def increment_degree(self, degree: int = 1, freq: int = 550):
+        self.move_to_step_no_a(self.step + degree * self.__one_degree_step, freq)
+
+    @activate_motor
+    def decrement_degree(self, degree: int = 1, freq: int = 550):
+        self.move_to_step_no_a(max(0, self.step - self.__one_degree_step), freq)
+
+    @activate_motor
+    def increment_step(self, step: int = 1, freq: int = 550):
+        if self.step + step > self.step_range:
             raise ValueError("step out of range")
 
         self.dir = Direction.CCW
 
-        GPIO.output(self.pins.STEP, GPIO.HIGH)
-        GPIO.output(self.pins.STEP, GPIO.LOW)
+        for _ in range(step):
+            GPIO.output(self.pins.STEP, GPIO.HIGH)
+            GPIO.output(self.pins.STEP, GPIO.LOW)
+            sleep(1 / freq)
 
-        self.step += 1
+        self.step += step
 
     @activate_motor
-    def decrement_step(self):
-        if self.step - 1 < 0:
+    def decrement_step(self, step: int = 1, freq: int = 550):
+        if self.step - step < 0:
             raise ValueError("step out of range")
 
         self.dir = Direction.CW
 
-        GPIO.output(self.pins.STEP, GPIO.HIGH)
-        GPIO.output(self.pins.STEP, GPIO.LOW)
+        for _ in range(step):
+            GPIO.output(self.pins.STEP, GPIO.HIGH)
+            GPIO.output(self.pins.STEP, GPIO.LOW)
+            sleep(1 / freq)
 
-        self.step -= 1
+        self.step -= step
