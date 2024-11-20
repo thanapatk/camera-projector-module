@@ -1,5 +1,4 @@
 import cv2
-from cv2 import aruco
 import numpy as np
 
 GRID_SIZE = 90
@@ -13,14 +12,14 @@ PADDING = (
 
 markers = [np.zeros((MARKER_SIZE, MARKER_SIZE), dtype=np.uint8) for _ in range(4)]
 markers = [
-    aruco.drawMarker(
-        aruco.Dictionary_get(cv2.aruco.DICT_6X6_50),
+    cv2.aruco.drawMarker(
+        cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_6X6_50),
         id,
         MARKER_SIZE,
         img,
         1,
     )
-    for id, img in enumerate(markers)
+    for id, img in zip((0, 1, 3, 2), markers)
 ]
 
 img = np.ones(SCREEN_SIZE[::-1], dtype=np.uint8) * 255
@@ -45,5 +44,4 @@ for i, marker in enumerate(markers):
 
     img[pos[1] : pos[1] + MARKER_SIZE, pos[0] : pos[0] + MARKER_SIZE] = marker
 
-
-cv2.imwrite("calibration1.png", img)
+cv2.imwrite("calibration.png", img)
