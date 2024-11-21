@@ -4,7 +4,6 @@ from numpy import size
 from camera.camera import Camera
 from motor_controller.motor_controller import StepperController, StepperPins
 from projector import Projector
-from cv2 import imread
 from time import sleep
 
 config = configparser.ConfigParser()
@@ -31,7 +30,14 @@ controller = StepperController(
 
 camera_config = config["Camera"]
 camera = Camera(
-    size=(camera_config.getint("width"), camera_config.getint("height")),
+    color_size=(
+        camera_config.getint("color_width"),
+        camera_config.getint("color_height"),
+    ),
+    depth_size=(
+        camera_config.getint("depth_width"),
+        camera_config.getint("depth_height"),
+    ),
     fps=camera_config.getint("fps"),
 )
 
@@ -39,24 +45,19 @@ projector = Projector(
     stepper_controller=controller,
     camera_controller=camera,
     window_name="Auto Focus Projector",
-    output_size=(640, 480),
+    # output_size=(1280, 720),
 )
 
 freq = 1000 * 2  # freq to move to limit 225
 
 if __name__ == "__main__":
-    projector.freeze_frame = True
-    projector.add_frame(imread("camera/calibration.png"))
+    # controller.move_to_step(controller.step_range, 225 * 2)
 
-    # sleep(10)
+    depth, step, area = projector.calibrate_focus()
 
-    # for i in range(10):
-    #     controller.move_to_step(controller.step_range * 3 // 4, freq)
-    #     controller.move_to_step(controller.step_range // 4, freq)
-
-    controller.move_to_step(controller.step_range, 225 * 2)
-
-    # projector.stop_event.set()
+    print(f"Depth: {depth}")
+    print(f"Step: {step}")
+    print(f"Area: {area}")
 
     projector.stop()
     camera.stop()

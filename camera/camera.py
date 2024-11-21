@@ -22,15 +22,25 @@ class CameraConfig:
 
 @singleton
 class Camera:
-    def __init__(self, size: Tuple[int, int], fps: int):
+    def __init__(
+        self,
+        color_size: Tuple[int, int] = (1280, 720),
+        depth_size: Tuple[int, int] = (640, 480),
+        fps: int = 30,
+    ):
         self.pipeline = rs.pipeline()
         self.config = rs.config()
 
-        self.size = size
+        self.color_size = color_size
+        self.depth_size = depth_size
         self.fps = fps
 
-        self.config.enable_stream(rs.stream.color, *self.size, rs.format.bgr8, self.fps)
-        self.config.enable_stream(rs.stream.depth, *self.size, rs.format.z16, self.fps)
+        self.config.enable_stream(
+            rs.stream.color, *self.color_size, rs.format.bgr8, self.fps
+        )
+        self.config.enable_stream(
+            rs.stream.depth, *self.depth_size, rs.format.z16, self.fps
+        )
 
         self.queue = rs.frame_queue(50, keep_frames=True)
 
