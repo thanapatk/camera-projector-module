@@ -4,7 +4,6 @@ import os
 import threading
 import time
 
-from numpy.core.multiarray import dtype, ndarray
 from camera.camera import Camera, CameraConfig
 from motor_controller.motor_controller import StepperController
 from utils.singleton import singleton
@@ -44,6 +43,9 @@ class Projector:
 
         self.video_queue_lock = threading.Lock()
         self.stop_event = threading.Event()
+
+        self.aruco_dict = cv2.aruco.Dictionary_get(cv2.aruco.DICT_6X6_50)
+        self.aruco_params = cv2.aruco.DetectorParameters_create()
 
         self.display_thread = threading.Thread(target=self.display_frames, daemon=True)
         self.display_thread.start()
@@ -225,9 +227,6 @@ class Projector:
             self.freeze_frame = True
             self.video_queue.append(cv2.resize(calibration_img, self.output_size))
 
-        aruco_dict = cv2.aruco.Dictionary_get(cv2.aruco.DICT_6X6_50)
-        aruco_params = cv2.aruco.DetectorParameters_create()
-
         self.camera_controller.apply_config(CameraConfig.CALIBRATION_MODE)
 
         while not found_four_markers:
@@ -244,23 +243,18 @@ class Projector:
             color_img = np.asanyarray(color_frame.get_data())
 
             corners, ids, _ = cv2.aruco.detectMarkers(
-                color_img, aruco_dict, parameters=aruco_params
+                color_img, self.aruco_dict, parameters=self.aruco_params
             )
 
             if len(corners) == 4:
                 found_four_markers = True
 
-                warp_matrix = self.find_align_matrix(corners, ids)
+        aligned_calibration_img = self.auto_keystone(calibration_img)
 
-                aligned_calibration_img = self.create_aligned_image(
-                    calibration_img, warp_matrix
-                )
+        with self.video_queue_lock:
+            self.video_queue.popleft()
+            self.video_queue.append(aligned_calibration_img)
 
-                with self.video_queue_lock:
-                    self.video_queue.popleft()
-                    self.video_queue.append(aligned_calibration_img)
-
-        # self.stepper_controller.move_to_step_no_a(0)
         time.sleep(0.5)
 
         while True:
@@ -272,7 +266,7 @@ class Projector:
             color_img = np.asanyarray(color_frame.get_data())
 
             corners, ids, _ = cv2.aruco.detectMarkers(
-                color_img, aruco_dict, parameters=aruco_params
+                color_img, self.aruco_dict, parameters=self.aruco_params
             )
 
             if len(corners) == 4:
@@ -293,9 +287,6 @@ class Projector:
         max_contrast = -1
         max_step = 0
 
-        # self.camera_controller.apply_config(CameraConfig.NORMAL_MODE)
-
-        # self.stepper_controller.move_to_step(0, freq=1000)
         self.stepper_controller.decrement_degree(degree=20)
         time.sleep(0.5)
 
@@ -323,6 +314,7 @@ class Projector:
                 break
 
         self.stepper_controller.move_to_step(max_step)
+        time.sleep(0.5)
 
         while True:
             _, color_frame = self.camera_controller.get_frames()
@@ -333,7 +325,7 @@ class Projector:
             color_img = np.asanyarray(color_frame.get_data())
 
             corners, ids, _ = cv2.aruco.detectMarkers(
-                color_img, aruco_dict, parameters=aruco_params
+                color_img, self.aruco_dict, parameters=self.aruco_params
             )
 
             if len(corners) == 4:
@@ -358,3 +350,23 @@ class Projector:
 
     def move_to_focus(self, depth: float):
         self.stepper_controller.move_to_step(self.get_approx_step(depth))
+
+    def auto_keystone(self, img: np.ndarray) -> np.ndarray:
+        while True:
+            _, color_frame = self.camera_controller.get_frames()
+
+            if not color_frame:
+                continue
+
+            color_img = np.asanyarray(color_frame.get_data())
+
+            corners, ids, _ = cv2.aruco.detectMarkers(
+                color_img, self.aruco_dict, parameters=self.aruco_params
+            )
+
+            if len(corners) == 4:
+                break
+
+        warp_matrix = self.find_align_matrix(corners, ids)
+
+        return self.create_aligned_image(img, warp_matrix)

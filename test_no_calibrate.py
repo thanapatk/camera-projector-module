@@ -30,7 +30,14 @@ controller = StepperController(
 
 camera_config = config["Camera"]
 camera = Camera(
-    size=(camera_config.getint("width"), camera_config.getint("height")),
+    color_size=(
+        camera_config.getint("color_width"),
+        camera_config.getint("color_height"),
+    ),
+    depth_size=(
+        camera_config.getint("depth_width"),
+        camera_config.getint("depth_height"),
+    ),
     fps=camera_config.getint("fps"),
 )
 
@@ -57,6 +64,11 @@ if __name__ == "__main__":
     projector.add_frame(img)
 
     projector.move_to_focus(depth)
+    aligned = projector.auto_keystone(img)
+
+    with projector.video_queue_lock:
+        projector.video_queue.append(aligned)
+        projector.video_queue.popleft()
 
     time.sleep(10)
 
