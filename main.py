@@ -3,6 +3,7 @@ import configparser
 from camera.camera import Camera
 from motor_controller.motor_controller import StepperController, StepperPins
 from projector.projector import Projector
+from utils.contour_transformer import ContourTransformationModels
 
 config = configparser.ConfigParser()
 config.read("config.ini")
@@ -39,9 +40,13 @@ camera = Camera(
     depth_fps=camera_config.getint("depth_fps"),
 )
 
+with open("models.pkl", "rb") as f:
+    contour_transformer = ContourTransformationModels(f)
+
 projector = Projector(
     stepper_controller=controller,
     camera_controller=camera,
+    contour_transformer=contour_transformer,
     window_name="Auto Focus Projector",
     focal_length=config["Lens"].getfloat("f"),
 )

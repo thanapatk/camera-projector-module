@@ -7,6 +7,7 @@ import time
 from camera.camera import Camera, CameraConfig
 from motor_controller.motor_controller import StepperController
 from utils.singleton import singleton
+from utils.contour_transformer import ContourTransformationModels
 from collections import deque
 from typing import Optional, Tuple
 
@@ -23,6 +24,7 @@ class Projector:
         self,
         stepper_controller: StepperController,
         camera_controller: Camera,
+        contour_transformer: ContourTransformationModels,
         focal_length: float,
         window_name: str,
         fps: int = 30,
@@ -37,6 +39,7 @@ class Projector:
 
         self.stepper_controller = stepper_controller
         self.camera_controller = camera_controller
+        self.contour_transformer = contour_transformer
 
         self.output_size = output_size
 
@@ -358,6 +361,8 @@ class Projector:
                 area = cv2.contourArea(outer_corners)
                 break
 
+        self.stepper_controller.is_active = False
+
         return average_depth, max_step, area
 
     @staticmethod
@@ -383,7 +388,9 @@ class Projector:
         Returns:
             Tuple[Tuple[float, float], Tuple[float, float], float]: The transformed rectangle in (center, (width, height), angle) format.
         """
-        tx, ty = self.get_translation_vector(scene_depth, object_depth)
+        tx, ty, bias = self.contour_transformer.predict_transformations(
+            scene_depth, object_depth
+        )
 
         scale = (
             (object_depth - self.focal_length)
@@ -415,75 +422,8 @@ class Projector:
             "float32"
         )  # Extract (x, y)
 
-        if (
-            transformed_points.shape[0] >= 3
-        ):  # At least 3 points required for minAreaRect
-            transformed_rect = cv2.minAreaRect(transformed_points)
-        else:
-            raise ValueError(
-                "Insufficient points for minAreaRect after transformation."
-            )
-
-        (x, y), (width, height), angle = transformed_rect
-
-        return ((x + tx, y + ty), (width * scale, height * scale), angle)
-
-    def transform_rect_calibration(
-        self,
-        scene_depth: float,
-        object_depth: float,
-        rect: Tuple[Tuple[float, float], Tuple[float, float], float],
-        matrix: np.ndarray,
-        tx: float,
-        ty: float,
-        bias: float,
-    ) -> Tuple[Tuple[float, float], Tuple[float, float], float]:
-        """
-        Apply scaling and a homography transformation to a rotated rectangle.
-
-        Args:
-            scene_depth (float): Depth of the scene.
-            object_depth (float): Depth of the object.
-            rect (Tuple[Tuple[float, float], Tuple[float, float], float]): The rectangle in (center, (width, height), angle) format.
-            matrix (np.ndarray): The homography matrix to apply.
-
-        Returns:
-            Tuple[Tuple[float, float], Tuple[float, float], float]: The transformed rectangle in (center, (width, height), angle) format.
-        """
-        # Calculate depth-dependent scale
-        scale = (
-            (object_depth - self.focal_length)
-            / (scene_depth - self.focal_length)
-            * (scene_depth / object_depth)
-            * bias
-        )
-
-        # Scale the rectangle dimensions
-        new_rect = cv2.boxPoints(rect)
-        new_rect = np.array(new_rect, dtype="float32")
-
-        # Step 2: Apply homography to each corner
-        ones = np.ones(
-            (new_rect.shape[0], 1), dtype="float32"
-        )  # Add ones for homogeneous coordinates
-        rect_homogeneous = np.hstack([new_rect, ones])  # Shape: (4, 3)
-
-        # Transform using the combined transformation matrix
-        transformed_corners = (matrix @ rect_homogeneous.T).T  # Shape: (4, 3)
-
-        # Normalize by the last coordinate (prevent division by zero)
-        transformed_corners[:, :2] /= np.maximum(
-            transformed_corners[:, 2].reshape(-1, 1), 1e-5
-        )
-
-        # Step 3: Convert back to the rotated rectangle representation
-        transformed_points = transformed_corners[:, :2].astype(
-            "float32"
-        )  # Extract (x, y)
-
-        if (
-            transformed_points.shape[0] >= 3
-        ):  # At least 3 points required for minAreaRect
+        # At least 3 points required for minAreaRect
+        if transformed_points.shape[0] >= 3:
             transformed_rect = cv2.minAreaRect(transformed_points)
         else:
             raise ValueError(
