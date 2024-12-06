@@ -6,7 +6,7 @@ from utils.singleton import singleton
 class CameraConfig:
     CALIBRATION_MODE = {
         rs.option.enable_auto_exposure: False,
-        rs.option.exposure: 80.0,
+        rs.option.exposure: 100.0,
         rs.option.gain: 7,
         rs.option.brightness: -64.0,
         rs.option.contrast: 100.0,
@@ -26,25 +26,35 @@ class Camera:
         self,
         color_size: Tuple[int, int] = (1280, 720),
         depth_size: Tuple[int, int] = (640, 480),
-        fps: int = 30,
+        color_fps: int = 30,
+        depth_fps: int = 30,
+        decimation_magnitude=1.0,
+        spatial_magnitude=2.0,
+        spatial_smooth_alpha=0.5,
+        spatial_smooth_delta=20,
+        temporal_smooth_alpha=0.4,
+        temporal_smooth_delta=20,
     ):
         self.pipeline = rs.pipeline()
         self.config = rs.config()
 
         self.color_size = color_size
         self.depth_size = depth_size
-        self.fps = fps
+
+        self.color_fps = color_fps
+        self.depth_fps = depth_fps
 
         self.config.enable_stream(
-            rs.stream.color, *self.color_size, rs.format.bgr8, self.fps
+            rs.stream.color, *self.color_size, rs.format.bgr8, self.color_fps
         )
         self.config.enable_stream(
-            rs.stream.depth, *self.depth_size, rs.format.z16, self.fps
+            rs.stream.depth, *self.depth_size, rs.format.z16, self.depth_fps
         )
 
-        self.queue = rs.frame_queue(50, keep_frames=True)
-
-        self.profile = self.pipeline.start(self.config, self.queue)
+        # self.queue = rs.frame_queue(50, keep_frames=True)
+        #
+        # self.profile = self.pipeline.start(self.config, self.queue)
+        self.profile = self.pipeline.start(self.config)
 
         self.depth_sensor = self.profile.get_device().first_depth_sensor()
         self.color_sensor = self.profile.get_device().first_color_sensor()
@@ -52,6 +62,29 @@ class Camera:
         self.apply_config(CameraConfig.NORMAL_MODE)
 
         self.align = rs.align(rs.stream.color)
+
+        # Available filters and control options for the filters
+        self.decimation_filter = rs.decimation_filter()
+        self.spatial_filter = rs.spatial_filter()
+        self.temporal_filter = rs.temporal_filter()
+
+        # Apply the control parameters for the filter
+        self.decimation_filter.set_option(
+            rs.option.filter_magnitude, decimation_magnitude
+        )
+        self.spatial_filter.set_option(rs.option.filter_magnitude, spatial_magnitude)
+        self.spatial_filter.set_option(
+            rs.option.filter_smooth_alpha, spatial_smooth_alpha
+        )
+        self.spatial_filter.set_option(
+            rs.option.filter_smooth_delta, spatial_smooth_delta
+        )
+        self.temporal_filter.set_option(
+            rs.option.filter_smooth_alpha, temporal_smooth_alpha
+        )
+        self.temporal_filter.set_option(
+            rs.option.filter_smooth_delta, temporal_smooth_delta
+        )
 
     def stop(self):
         self.pipeline.stop()
@@ -61,49 +94,48 @@ class Camera:
             self.color_sensor.set_option(key, value)
 
     def get_frames(self):
+        frames = self.pipeline.wait_for_frames()
+
+        aligned_frames = self.align.process(frames)
+
+        return (
+            self.post_process_depth_frame(aligned_frames.get_depth_frame()),
+            aligned_frames.get_color_frame(),
+        )
+
+    def post_process_depth_frame(self, depth_frame):
         """
-        depth_frame, color_frame
+        Filter the depth frame acquired using the Intel RealSense device
+
+        Parameters:
+        -----------
+        depth_frame          : rs.frame()
+                               The depth frame to be post-processed
+        decimation_magnitude : double
+                               The magnitude of the decimation filter
+        spatial_magnitude    : double
+                               The magnitude of the spatial filter
+        spatial_smooth_alpha : double
+                               The alpha value for spatial filter based smoothening
+        spatial_smooth_delta : double
+                               The delta value for spatial filter based smoothening
+        temporal_smooth_alpha: double
+                               The alpha value for temporal filter based smoothening
+        temporal_smooth_delta: double
+                               The delta value for temporal filter based smoothening
+
+        Return:
+        ----------
+        filtered_frame : rs.frame()
+                         The post-processed depth frame
         """
-        frames = self.queue.wait_for_frame()
 
-        aligned_frames = self.align.process(frames.as_frameset())
+        # Post processing possible only on the depth_frame
+        assert depth_frame.is_depth_frame()
 
-        return aligned_frames.get_depth_frame(), aligned_frames.get_color_frame()
+        # Apply the filters
+        filtered_frame = self.decimation_filter.process(depth_frame)
+        filtered_frame = self.spatial_filter.process(filtered_frame)
+        filtered_frame = self.temporal_filter.process(filtered_frame)
 
-
-# if __name__ == "__main__":
-#     import cv2
-#     import numpy as np
-#
-#     __import__("os").environ["DISPLAY"] = ":0"
-#
-#     camera = Camera(size=(640, 480), fps=30)
-#
-#     aruco_dict = cv2.aruco.Dictionary_get(cv2.aruco.DICT_6X6_50)
-#     aruco_params = cv2.aruco.DetectorParameters_create()
-#
-#     try:
-#         while True:
-#             _, color_frame = camera.get_frames()
-#
-#             if not color_frame:
-#                 continue
-#
-#             color_img = np.asanyarray(color_frame.get_data())
-#
-#             corners, ids, rejected = cv2.aruco.detectMarkers(
-#                 color_img, aruco_dict, parameters=aruco_params
-#             )
-#
-#             new_img = cv2.aruco.drawDetectedMarkers(color_img, corners, ids)
-#
-#             cv2.imshow("color frame", color_img)
-#             cv2.imshow("markers", new_img)
-#
-#             if cv2.waitKey(1) & 0xFF == ord("q"):
-#                 break
-#
-#     except Exception as e:
-#         print(e)
-#     finally:
-#         cv2.destroyAllWindows()
+        return filtered_frame
