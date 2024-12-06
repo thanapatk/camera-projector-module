@@ -3,7 +3,7 @@ import os
 
 from camera.camera import Camera
 from motor_controller.motor_controller import StepperController, StepperPins
-from projector import Projector
+from projector.projector import Projector
 
 config = configparser.ConfigParser()
 config.read("config.ini")
@@ -29,14 +29,23 @@ controller = StepperController(
 
 camera_config = config["Camera"]
 camera = Camera(
-    size=(camera_config.getint("width"), camera_config.getint("height")),
-    fps=camera_config.getint("fps"),
+    color_size=(
+        camera_config.getint("color_width"),
+        camera_config.getint("color_height"),
+    ),
+    depth_size=(
+        camera_config.getint("depth_width"),
+        camera_config.getint("depth_height"),
+    ),
+    color_fps=camera_config.getint("depth_fps"),
+    depth_fps=camera_config.getint("depth_fps"),
 )
 
 projector = Projector(
     stepper_controller=controller,
     camera_controller=camera,
     window_name="Auto Focus Projector",
+    focal_length=config["Lens"].getfloat("f"),
 )
 
 if __name__ == "__main__":

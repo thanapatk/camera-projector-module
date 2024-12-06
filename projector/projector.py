@@ -23,6 +23,7 @@ class Projector:
         self,
         stepper_controller: StepperController,
         camera_controller: Camera,
+        focal_length: float,
         window_name: str,
         fps: int = 30,
         output_size: Tuple[int, int] = (1920, 1080),
@@ -32,14 +33,32 @@ class Projector:
         self.fps = fps
         self.frame_time = 1 / fps
         self.window_name = window_name
+        self.focal_length = focal_length
 
         self.stepper_controller = stepper_controller
         self.camera_controller = camera_controller
 
         self.output_size = output_size
-        self.empty_frame = np.zeros((*self.output_size[::-1], 3), dtype=np.uint8)
+
+        self.empty_frame_no_border = np.zeros(
+            (*self.output_size[::-1], 3), dtype=np.uint8
+        )
+        self.empty_frame = self.empty_frame_no_border.copy()
+        line_thickness = 2
+        cv2.rectangle(
+            self.empty_frame,
+            (line_thickness, line_thickness),
+            (
+                self.output_size[0] - line_thickness,
+                self.output_size[1] - line_thickness,
+            ),
+            (0, 0, 255),
+            line_thickness,
+        )
+
         self.video_queue = deque()
         self.freeze_frame = False
+        self.hold_last_frame = True
 
         self.video_queue_lock = threading.Lock()
         self.stop_event = threading.Event()
@@ -60,7 +79,9 @@ class Projector:
             with self.video_queue_lock:
                 if len(self.video_queue) == 0:
                     frame = self.empty_frame
-                elif self.freeze_frame:
+                elif self.freeze_frame or (
+                    len(self.video_queue) == 1 and self.hold_last_frame
+                ):
                     frame = self.video_queue[0]
                 else:
                     frame = self.video_queue.popleft()
@@ -135,16 +156,19 @@ class Projector:
         cls,
         corners: Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray],
         ids: np.ndarray,
+        relative: bool = True,
+        normalize: bool = True,
     ):
         detected_corners = cls.get_corners(corners, ids)
+        desired_corners = cls.__DESIRED_CORNERS
 
-        relative_detected_corners = cls.get_relative_corners(detected_corners)
-        norm_detected_corners = cls.normalized_corners(relative_detected_corners)
+        if relative:
+            desired_corners = cls.get_relative_corners(desired_corners)
+            detected_corners = cls.get_relative_corners(detected_corners)
+        if normalize:
+            detected_corners = cls.normalized_corners(detected_corners)
 
-        H, _ = cv2.findHomography(
-            norm_detected_corners,
-            cls.get_relative_corners(cls.__DESIRED_CORNERS),
-        )
+        H, _ = cv2.findHomography(detected_corners, desired_corners)
 
         return H
 
@@ -159,11 +183,12 @@ class Projector:
         x_min, y_min = warped_corners.min(axis=0).ravel() - 0.5
         x_max, y_max = warped_corners.max(axis=0).ravel() + 0.5
 
-        transform_matrix = np.array([[1, 0, -x_min], [0, 1, -y_min], [0, 0, 1]])
+        translate_matrix = np.array([[1, 0, -x_min], [0, 1, -y_min], [0, 0, 1]])
 
         size = (round(x_max - x_min), round(y_max - y_min))
 
-        corrected_image = cv2.warpPerspective(img, transform_matrix @ warp_matrix, size)
+        self.auto_keystone_matrix = translate_matrix @ warp_matrix
+        corrected_image = cv2.warpPerspective(img, self.auto_keystone_matrix, size)
 
         scale = min(np.array(self.output_size) / size)
         scaled_size = (int(size[0] * scale), int(size[1] * scale))
@@ -249,7 +274,7 @@ class Projector:
             if len(corners) == 4:
                 found_four_markers = True
 
-        aligned_calibration_img = self.auto_keystone(calibration_img)
+        _, aligned_calibration_img = self.auto_keystone(calibration_img)
 
         with self.video_queue_lock:
             self.video_queue.popleft()
@@ -333,25 +358,146 @@ class Projector:
                 area = cv2.contourArea(outer_corners)
                 break
 
-        # print(f"Max contrast: {max_contrast}")
-        # print(f"@ step: {max_step}")
-        # print(f"@ depth: {average_depth}")
-        # print(f"@ area: {area}")
-
         return average_depth, max_step, area
 
     @staticmethod
     def get_approx_step(depth: float) -> int:
         return int(-0.0042 * depth**2 + 7.2565 * depth - 1911.1)
 
-    @staticmethod
-    def get_approx_area(depth: float) -> float:
-        return -0.0679 * depth**2 + 114.29 * depth + 25144
+    def transform_rect(
+        self,
+        scene_depth: float,
+        object_depth: float,
+        rect: Tuple[Tuple[float, float], Tuple[float, float], float],
+        matrix: np.ndarray,
+    ) -> Tuple[Tuple[float, float], Tuple[float, float], float]:
+        """
+        Apply scaling and a homography transformation to a rotated rectangle.
+
+        Args:
+            scene_depth (float): Depth of the scene.
+            object_depth (float): Depth of the object.
+            rect (Tuple[Tuple[float, float], Tuple[float, float], float]): The rectangle in (center, (width, height), angle) format.
+            matrix (np.ndarray): The homography matrix to apply.
+
+        Returns:
+            Tuple[Tuple[float, float], Tuple[float, float], float]: The transformed rectangle in (center, (width, height), angle) format.
+        """
+        tx, ty = self.get_translation_vector(scene_depth, object_depth)
+
+        scale = (
+            (object_depth - self.focal_length)
+            / (scene_depth - self.focal_length)
+            * (scene_depth / object_depth)
+            * bias
+        )
+
+        # Scale the rectangle dimensions
+        new_rect = cv2.boxPoints(rect)
+        new_rect = np.array(new_rect, dtype="float32")
+
+        # Step 2: Apply homography to each corner
+        ones = np.ones(
+            (new_rect.shape[0], 1), dtype="float32"
+        )  # Add ones for homogeneous coordinates
+        rect_homogeneous = np.hstack([new_rect, ones])  # Shape: (4, 3)
+
+        # Transform using the combined transformation matrix
+        transformed_corners = (matrix @ rect_homogeneous.T).T  # Shape: (4, 3)
+
+        # Normalize by the last coordinate (prevent division by zero)
+        transformed_corners[:, :2] /= np.maximum(
+            transformed_corners[:, 2].reshape(-1, 1), 1e-5
+        )
+
+        # Step 3: Convert back to the rotated rectangle representation
+        transformed_points = transformed_corners[:, :2].astype(
+            "float32"
+        )  # Extract (x, y)
+
+        if (
+            transformed_points.shape[0] >= 3
+        ):  # At least 3 points required for minAreaRect
+            transformed_rect = cv2.minAreaRect(transformed_points)
+        else:
+            raise ValueError(
+                "Insufficient points for minAreaRect after transformation."
+            )
+
+        (x, y), (width, height), angle = transformed_rect
+
+        return ((x + tx, y + ty), (width * scale, height * scale), angle)
+
+    def transform_rect_calibration(
+        self,
+        scene_depth: float,
+        object_depth: float,
+        rect: Tuple[Tuple[float, float], Tuple[float, float], float],
+        matrix: np.ndarray,
+        tx: float,
+        ty: float,
+        bias: float,
+    ) -> Tuple[Tuple[float, float], Tuple[float, float], float]:
+        """
+        Apply scaling and a homography transformation to a rotated rectangle.
+
+        Args:
+            scene_depth (float): Depth of the scene.
+            object_depth (float): Depth of the object.
+            rect (Tuple[Tuple[float, float], Tuple[float, float], float]): The rectangle in (center, (width, height), angle) format.
+            matrix (np.ndarray): The homography matrix to apply.
+
+        Returns:
+            Tuple[Tuple[float, float], Tuple[float, float], float]: The transformed rectangle in (center, (width, height), angle) format.
+        """
+        # Calculate depth-dependent scale
+        scale = (
+            (object_depth - self.focal_length)
+            / (scene_depth - self.focal_length)
+            * (scene_depth / object_depth)
+            * bias
+        )
+
+        # Scale the rectangle dimensions
+        new_rect = cv2.boxPoints(rect)
+        new_rect = np.array(new_rect, dtype="float32")
+
+        # Step 2: Apply homography to each corner
+        ones = np.ones(
+            (new_rect.shape[0], 1), dtype="float32"
+        )  # Add ones for homogeneous coordinates
+        rect_homogeneous = np.hstack([new_rect, ones])  # Shape: (4, 3)
+
+        # Transform using the combined transformation matrix
+        transformed_corners = (matrix @ rect_homogeneous.T).T  # Shape: (4, 3)
+
+        # Normalize by the last coordinate (prevent division by zero)
+        transformed_corners[:, :2] /= np.maximum(
+            transformed_corners[:, 2].reshape(-1, 1), 1e-5
+        )
+
+        # Step 3: Convert back to the rotated rectangle representation
+        transformed_points = transformed_corners[:, :2].astype(
+            "float32"
+        )  # Extract (x, y)
+
+        if (
+            transformed_points.shape[0] >= 3
+        ):  # At least 3 points required for minAreaRect
+            transformed_rect = cv2.minAreaRect(transformed_points)
+        else:
+            raise ValueError(
+                "Insufficient points for minAreaRect after transformation."
+            )
+
+        (x, y), (width, height), angle = transformed_rect
+
+        return ((x + tx, y + ty), (width * scale, height * scale), angle)
 
     def move_to_focus(self, depth: float):
         self.stepper_controller.move_to_step(self.get_approx_step(depth))
 
-    def auto_keystone(self, img: np.ndarray) -> np.ndarray:
+    def auto_keystone(self, img: np.ndarray):
         while True:
             _, color_frame = self.camera_controller.get_frames()
 
@@ -369,4 +515,8 @@ class Projector:
 
         warp_matrix = self.find_align_matrix(corners, ids)
 
-        return self.create_aligned_image(img, warp_matrix)
+        return warp_matrix, self.create_aligned_image(img, warp_matrix)
+
+    @staticmethod
+    def apply_matrix(img, matrix):
+        return cv2.warpPerspective(img, matrix, img.shape[:2][::-1])
