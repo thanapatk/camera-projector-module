@@ -42,7 +42,16 @@ def activate_motor(func):
     def wrapper(self, *args, **kargs):
         self.is_active = True
         result = func(self, *args, **kargs)
+        self.is_active = False
+        return result
+
+    return wrapper
+
+
+def activate_motor_no_deactivate(func):
+    def wrapper(self, *args, **kargs):
         self.is_active = True
+        result = func(self, *args, **kargs)
         return result
 
     return wrapper
@@ -75,6 +84,7 @@ class StepperController:
             self.home_motor()
 
     def stop(self):
+        GPIO.output(self.pins.EN, 1)
         GPIO.cleanup()
 
     @property
@@ -153,15 +163,17 @@ class StepperController:
 
         self.step = step
 
-    @activate_motor
+    @activate_motor_no_deactivate
     def increment_degree(self, degree: int = 1, freq: int = 550):
         self.move_to_step_no_a(self.step + degree * self.__one_degree_step, freq)
 
-    @activate_motor
+    @activate_motor_no_deactivate
     def decrement_degree(self, degree: int = 1, freq: int = 550):
-        self.move_to_step_no_a(max(0, self.step - self.__one_degree_step), freq)
+        self.move_to_step_no_a(
+            max(0, self.step - degree * self.__one_degree_step), freq
+        )
 
-    @activate_motor
+    @activate_motor_no_deactivate
     def increment_step(self, step: int = 1, freq: int = 550):
         if self.step + step > self.step_range:
             raise ValueError("step out of range")
@@ -175,7 +187,7 @@ class StepperController:
 
         self.step += step
 
-    @activate_motor
+    @activate_motor_no_deactivate
     def decrement_step(self, step: int = 1, freq: int = 550):
         if self.step - step < 0:
             raise ValueError("step out of range")
