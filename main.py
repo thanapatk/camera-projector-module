@@ -1,10 +1,8 @@
 import configparser
 
-from numpy import size
 from camera.camera import Camera
 from motor_controller.motor_controller import StepperController, StepperPins
-from projector import Projector
-from time import sleep
+from projector.projector import Projector
 
 config = configparser.ConfigParser()
 config.read("config.ini")
@@ -25,7 +23,6 @@ controller = StepperController(
         dir_pin=stepper_config.getint("dir pin"),
         enabled_pin=stepper_config.getint("en pin"),
     ),
-    # home_motor=False,
 )
 
 camera_config = config["Camera"]
@@ -38,27 +35,18 @@ camera = Camera(
         camera_config.getint("depth_width"),
         camera_config.getint("depth_height"),
     ),
-    fps=camera_config.getint("fps"),
+    color_fps=camera_config.getint("depth_fps"),
+    depth_fps=camera_config.getint("depth_fps"),
 )
 
 projector = Projector(
     stepper_controller=controller,
     camera_controller=camera,
     window_name="Auto Focus Projector",
-    # output_size=(1280, 720),
+    focal_length=config["Lens"].getfloat("f"),
 )
 
-freq = 1000 * 2  # freq to move to limit 225
-
 if __name__ == "__main__":
-    # controller.move_to_step(controller.step_range, 225 * 2)
-
-    depth, step, area = projector.calibrate_focus()
-
-    print(f"Depth: {depth}")
-    print(f"Step: {step}")
-    print(f"Area: {area}")
-
     projector.stop()
     camera.stop()
     controller.stop()
