@@ -52,18 +52,17 @@ if __name__ == "__main__":
     for i in range(5):
         controller.home_motor()
 
-        depth, step, area = projector.calibrate_focus()
+        depth, step = projector.calibrate_focus()
 
         print(f"Depth: {depth} mm")
         print(f"Step: {step}")
-        print(f"Area: {area} px^2")
 
         output_file_exists = os.path.isfile("calibration_result.csv")
 
         with open("calibration_result.csv", "a+") as f:
             if not output_file_exists:
-                f.write("depth,step,area\n")
-            f.write(",".join(map(str, [depth, step, area])) + "\n")
+                f.write("depth,step\n")
+            f.write(",".join(map(str, [depth, step])) + "\n")
 
     projector.stop()
     camera.stop()

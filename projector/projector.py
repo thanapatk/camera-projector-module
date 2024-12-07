@@ -24,9 +24,9 @@ class Projector:
         self,
         stepper_controller: StepperController,
         camera_controller: Camera,
-        contour_transformer: ContourTransformationModels,
         focal_length: float,
         window_name: str,
+        contour_transformer: Optional[ContourTransformationModels] = None,
         fps: int = 30,
         output_size: Tuple[int, int] = (1920, 1080),
     ):
@@ -40,6 +40,8 @@ class Projector:
         self.stepper_controller = stepper_controller
         self.camera_controller = camera_controller
         self.contour_transformer = contour_transformer
+
+        self.d_step = 0
 
         self.output_size = output_size
 
@@ -107,6 +109,9 @@ class Projector:
         self.display_thread.join()
         cv2.destroyAllWindows()
 
+    def get_approx_step(self, depth: float) -> int:
+        return int(-0.0042 * depth**2 + 7.2565 * depth - 1911.1 + self.d_step)
+
     @staticmethod
     def get_center(corners: np.ndarray) -> np.ndarray:
         return (corners[0] + corners[2]) / 2
@@ -150,9 +155,11 @@ class Projector:
         x_min, y_min = np.min(corners, axis=0).ravel()
         x_max, y_max = np.max(corners, axis=0).ravel()
 
-        output = x_min, y_min, x_max - x_min, y_max - y_min
+        return int(x_min), int(y_min), int(x_max - x_min), int(y_max - y_min)
 
-        return tuple(map(int, output))
+    @staticmethod
+    def apply_matrix(img, matrix):
+        return cv2.warpPerspective(img, matrix, img.shape[:2][::-1])
 
     @classmethod
     def find_align_matrix(
@@ -174,40 +181,6 @@ class Projector:
         H, _ = cv2.findHomography(detected_corners, desired_corners)
 
         return H
-
-    def create_aligned_image(self, img: np.ndarray, warp_matrix):
-        h, w = img.shape[:2]
-
-        corners = np.array([[0, 0], [0, h], [w, h], [w, 0]], dtype=np.float32).reshape(
-            -1, 1, 2
-        )
-        warped_corners = cv2.perspectiveTransform(corners, warp_matrix)
-
-        x_min, y_min = warped_corners.min(axis=0).ravel() - 0.5
-        x_max, y_max = warped_corners.max(axis=0).ravel() + 0.5
-
-        translate_matrix = np.array([[1, 0, -x_min], [0, 1, -y_min], [0, 0, 1]])
-
-        size = (round(x_max - x_min), round(y_max - y_min))
-
-        self.auto_keystone_matrix = translate_matrix @ warp_matrix
-        corrected_image = cv2.warpPerspective(img, self.auto_keystone_matrix, size)
-
-        scale = min(np.array(self.output_size) / size)
-        scaled_size = (int(size[0] * scale), int(size[1] * scale))
-
-        resized_image = cv2.resize(corrected_image, scaled_size)
-
-        scene = np.zeros((*self.output_size[::-1], 3), np.uint8)
-
-        top_left = (np.array(scene.shape[:2]) - np.array(resized_image.shape[:2])) // 2
-
-        scene[
-            top_left[0] : top_left[0] + resized_image.shape[0],
-            top_left[1] : top_left[1] + resized_image.shape[1],
-        ] = resized_image
-
-        return scene
 
     @staticmethod
     def calculate_michelson_contrast(image: np.ndarray) -> float:
@@ -247,7 +220,42 @@ class Projector:
         contrast = (I_max - I_min) / (I_max + I_min)
         return contrast
 
+    def create_aligned_image(self, img: np.ndarray, warp_matrix):
+        h, w = img.shape[:2]
+
+        corners = np.array([[0, 0], [0, h], [w, h], [w, 0]], dtype=np.float32).reshape(
+            -1, 1, 2
+        )
+        warped_corners = cv2.perspectiveTransform(corners, warp_matrix)
+
+        x_min, y_min = warped_corners.min(axis=0).ravel() - 0.5
+        x_max, y_max = warped_corners.max(axis=0).ravel() + 0.5
+
+        translate_matrix = np.array([[1, 0, -x_min], [0, 1, -y_min], [0, 0, 1]])
+
+        size = (round(x_max - x_min), round(y_max - y_min))
+
+        self.auto_keystone_matrix = translate_matrix @ warp_matrix
+        corrected_image = cv2.warpPerspective(img, self.auto_keystone_matrix, size)
+
+        scale = min(np.array(self.output_size) / size)
+        scaled_size = (int(size[0] * scale), int(size[1] * scale))
+
+        resized_image = cv2.resize(corrected_image, scaled_size)
+
+        scene = np.zeros((*self.output_size[::-1], 3), np.uint8)
+
+        top_left = (np.array(scene.shape[:2]) - np.array(resized_image.shape[:2])) // 2
+
+        scene[
+            top_left[0] : top_left[0] + resized_image.shape[0],
+            top_left[1] : top_left[1] + resized_image.shape[1],
+        ] = resized_image
+
+        return scene
+
     def calibrate_focus(self):
+        # Step 1: Find markers
         found_four_markers = False
 
         calibration_img = cv2.imread("camera/calibration.png")
@@ -258,12 +266,7 @@ class Projector:
         self.camera_controller.apply_config(CameraConfig.CALIBRATION_MODE)
 
         while not found_four_markers:
-            try:
-                self.stepper_controller.increment_degree()
-            except ValueError:
-                raise Exception("Cannot find markers")
-
-            _, color_frame = self.camera_controller.get_frames()
+            color_frame = self.camera_controller.get_color_frame()
 
             if not color_frame:
                 continue
@@ -276,8 +279,12 @@ class Projector:
 
             if len(corners) == 4:
                 found_four_markers = True
+            try:
+                self.stepper_controller.increment_degree()
+            except ValueError:
+                raise Exception("Cannot find markers")
 
-        _, aligned_calibration_img = self.auto_keystone(calibration_img)
+        aligned_calibration_img = self.auto_keystone(calibration_img)
 
         with self.video_queue_lock:
             self.video_queue.popleft()
@@ -285,6 +292,7 @@ class Projector:
 
         time.sleep(0.5)
 
+        # Step 2: Find ROI for checkerboard
         while True:
             depth_frame, color_frame = self.camera_controller.get_frames()
 
@@ -302,24 +310,29 @@ class Projector:
                 break
 
         x, y, w, h = self.bounding_rect_from_corners(ROI_corners)
+
+        # Make the ROI a bit smaller
         x += int(w * 0.025)
         w = int(w * 0.95)
         y += int(h * 0.025)
         h = int(h * 0.95)
 
+        # Get the current scene depth
         depth_data = np.asanyarray(depth_frame.get_data())
         depth_ROI = depth_data[y : y + h, x : x + w]
         average_depth = np.mean(depth_ROI[depth_ROI != 0])
 
+        # Step 4: Find the motor position that has the sharpest image (highest contrast)
         found_max_contrast = False
         max_contrast = -1
         max_step = 0
 
+        # Move back a bit in case the previous step overshoot
         self.stepper_controller.decrement_degree(degree=20)
         time.sleep(0.5)
 
         while not found_max_contrast:
-            _, color_frame = self.camera_controller.get_frames()
+            color_frame = self.camera_controller.get_color_frame()
 
             if not color_frame:
                 continue
@@ -342,32 +355,77 @@ class Projector:
                 break
 
         self.stepper_controller.move_to_step(max_step)
-        time.sleep(0.5)
-
-        while True:
-            _, color_frame = self.camera_controller.get_frames()
-
-            if not color_frame:
-                continue
-
-            color_img = np.asanyarray(color_frame.get_data())
-
-            corners, ids, _ = cv2.aruco.detectMarkers(
-                color_img, self.aruco_dict, parameters=self.aruco_params
-            )
-
-            if len(corners) == 4:
-                outer_corners = self.get_corners(corners, ids)
-                area = cv2.contourArea(outer_corners)
-                break
 
         self.stepper_controller.is_active = False
 
-        return average_depth, max_step, area
+        self.d_step = max_step - self.get_approx_step(average_depth)
+        print(self.d_step)
 
-    @staticmethod
-    def get_approx_step(depth: float) -> int:
-        return int(-0.0042 * depth**2 + 7.2565 * depth - 1911.1)
+        return average_depth, max_step
+
+    def transform_rect_calibration(
+        self,
+        scene_depth: float,
+        object_depth: float,
+        rect: Tuple[Tuple[float, float], Tuple[float, float], float],
+        matrix: np.ndarray,
+        tx: float,
+        ty: float,
+        bias: float,
+    ) -> Tuple[Tuple[float, float], Tuple[float, float], float]:
+        """
+        Apply scaling and a homography transformation to a rotated rectangle.
+
+        Args:
+            scene_depth (float): Depth of the scene.
+            object_depth (float): Depth of the object.
+            rect (Tuple[Tuple[float, float], Tuple[float, float], float]): The rectangle in (center, (width, height), angle) format.
+            matrix (np.ndarray): The homography matrix to apply.
+
+        Returns:
+            Tuple[Tuple[float, float], Tuple[float, float], float]: The transformed rectangle in (center, (width, height), angle) format.
+        """
+        scale = (
+            (object_depth - self.focal_length)
+            / (scene_depth - self.focal_length)
+            * (scene_depth / object_depth)
+            * bias
+        )
+
+        # Scale the rectangle dimensions
+        new_rect = cv2.boxPoints(rect)
+        new_rect = np.array(new_rect, dtype="float32")
+
+        # Step 2: Apply homography to each corner
+        ones = np.ones(
+            (new_rect.shape[0], 1), dtype="float32"
+        )  # Add ones for homogeneous coordinates
+        rect_homogeneous = np.hstack([new_rect, ones])  # Shape: (4, 3)
+
+        # Transform using the combined transformation matrix
+        transformed_corners = (matrix @ rect_homogeneous.T).T  # Shape: (4, 3)
+
+        # Normalize by the last coordinate (prevent division by zero)
+        transformed_corners[:, :2] /= np.maximum(
+            transformed_corners[:, 2].reshape(-1, 1), 1e-5
+        )
+
+        # Step 3: Convert back to the rotated rectangle representation
+        transformed_points = transformed_corners[:, :2].astype(
+            "float32"
+        )  # Extract (x, y)
+
+        # At least 3 points required for minAreaRect
+        if transformed_points.shape[0] >= 3:
+            transformed_rect = cv2.minAreaRect(transformed_points)
+        else:
+            raise ValueError(
+                "Insufficient points for minAreaRect after transformation."
+            )
+
+        (x, y), (width, height), angle = transformed_rect
+
+        return ((x + tx, y + ty), (width * scale, height * scale), angle)
 
     def transform_rect(
         self,
@@ -388,6 +446,9 @@ class Projector:
         Returns:
             Tuple[Tuple[float, float], Tuple[float, float], float]: The transformed rectangle in (center, (width, height), angle) format.
         """
+        if not self.contour_transformer:
+            raise Exception("No Contour Transformer")
+
         tx, ty, bias = self.contour_transformer.predict_transformations(
             scene_depth, object_depth
         )
@@ -439,7 +500,7 @@ class Projector:
 
     def auto_keystone(self, img: np.ndarray):
         while True:
-            _, color_frame = self.camera_controller.get_frames()
+            color_frame = self.camera_controller.get_color_frame()
 
             if not color_frame:
                 continue
@@ -455,8 +516,87 @@ class Projector:
 
         warp_matrix = self.find_align_matrix(corners, ids)
 
-        return warp_matrix, self.create_aligned_image(img, warp_matrix)
+        return self.create_aligned_image(img, warp_matrix)
 
-    @staticmethod
-    def apply_matrix(img, matrix):
-        return cv2.warpPerspective(img, matrix, img.shape[:2][::-1])
+    def get_camera_projector_homolography(
+        self,
+    ) -> Tuple[np.ndarray, Tuple[int, int, int, int]]:
+        while True:
+            color_frame = self.camera_controller.get_color_frame()
+
+            if color_frame:
+                break
+
+        color_img = np.asanyarray(color_frame.get_data())
+
+        corners, ids, _ = cv2.aruco.detectMarkers(
+            color_img, self.aruco_dict, parameters=self.aruco_params
+        )
+
+        matrix = self.find_align_matrix(corners, ids, relative=True, normalize=False)
+
+        x, y, w, h = self.bounding_rect_from_corners(self.get_corners(corners, ids))
+
+        # transform to fit whole area
+        real_w, real_h = 1822 - 97, 1057 - 22
+        x -= int(97 * w / real_w)
+        y -= int(22 * h / real_h)
+        w = int(w * 1.113)
+        h = int(h * 1.043)
+
+        return matrix, (x, y, w, h)
+
+    def start_with_calibration(self):
+        scene_depth, _ = self.calibrate_focus()
+        matrix, ROI = self.get_camera_projector_homolography()
+        self.freeze_frame = False
+
+        return scene_depth, matrix, ROI
+
+    def start_no_calibration(self):
+        while True:
+            depth_frame = self.camera_controller.get_depth_frame()
+
+            if depth_frame:
+                break
+
+        depth_data = np.asanyarray(depth_frame.get_data())
+
+        h, w = depth_data.shape[:2]
+
+        approx_depth = depth_data[
+            int(h // 2 - h * 0.05) : int(h // 2 + h * 0.05),
+            int(w // 2 - w * 0.05) : int(w // 2 + w * 0.05),
+        ]
+        self.move_to_focus(np.mean(approx_depth[approx_depth != 0]))
+
+        calibration_img = cv2.imread("camera/calibration.png")
+        self.freeze_frame = True
+        self.add_frame(cv2.resize(calibration_img, self.output_size))
+
+        time.sleep(0.5)
+
+        aligned_calibration_img = self.auto_keystone(calibration_img)
+
+        with self.video_queue_lock:
+            self.video_queue.popleft()
+            self.video_queue.append(aligned_calibration_img)
+
+        time.sleep(0.5)
+
+        matrix, (x, y, w, h) = self.get_camera_projector_homolography()
+
+        self.freeze_frame = False
+
+        while True:
+            depth_frame = self.camera_controller.get_depth_frame()
+            if depth_frame:
+                break
+
+        depth_data = np.asanyarray(depth_frame.get_data())
+        depth_ROI = depth_data[y : y + h, x : x + w]
+
+        scene_depth = np.mean(depth_ROI[depth_ROI != 0])
+        self.move_to_focus(scene_depth)
+
+        return scene_depth, matrix, (x, y, w, h)
