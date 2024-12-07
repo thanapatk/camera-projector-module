@@ -4,7 +4,6 @@ import csv
 import configparser
 import numpy as np
 import cv2
-import time
 
 from camera.camera import Camera
 from motor_controller.motor_controller import StepperController, StepperPins
@@ -130,7 +129,7 @@ def append_data_to_csv(
 
 def main():
     while True:
-        depth_frame, _ = camera.get_frames()
+        depth_frame = camera.get_depth_frame()
 
         if not depth_frame:
             continue
@@ -162,9 +161,6 @@ def main():
 
         if contours:
             avg_depths.append(avg_depth)
-
-            if len(avg_depths) > 10:
-                avg_depths.popleft()
 
             contours = sorted(contours, key=cv2.contourArea, reverse=True)
             largest_contour = contours[0]
@@ -203,65 +199,8 @@ def main():
 
 
 if __name__ == "__main__":
-    depth_frame, _ = camera.get_frames()
-
-    if not depth_frame:
-        exit()
-
-    depth_data = np.asanyarray(depth_frame.get_data())
-
-    h, w = depth_data.shape[:2]
-
-    depth = depth_data[h // 2, w // 2]
-
-    img = cv2.imread("camera/calibration.png")
-    projector.freeze_frame = True
-    projector.add_frame(img)
-
-    projector.move_to_focus(depth)
-    _, aligned = projector.auto_keystone(img)
-
-    with projector.video_queue_lock:
-        projector.video_queue.append(aligned)
-        projector.video_queue.popleft()
-
-    time.sleep(1)
-
-    _, color_frame = camera.get_frames()
-
-    color_img = np.asanyarray(color_frame.get_data())
-
-    corners, ids, _ = cv2.aruco.detectMarkers(
-        color_img, projector.aruco_dict, parameters=projector.aruco_params
-    )
-
-    with projector.video_queue_lock:
-        projector.freeze_frame = False
-        projector.video_queue.clear()
-
-    time.sleep(1)
-
-    matrix = projector.find_align_matrix(corners, ids, relative=True, normalize=False)
-
-    x, y, w, h = projector.bounding_rect_from_corners(
-        projector.get_corners(corners, ids)
-    )
-
-    # transform to fit whole area
-    real_w, real_h = 1822 - 97, 1057 - 22
-    x -= int(97 * w / real_w)
-    y -= int(22 * h / real_h)
-    w = int(w * 1.113)
-    h = int(h * 1.043)
-
-    depth_frame, _ = camera.get_frames()
-    depth_data = np.asanyarray(depth_frame.get_data())
-
-    depth_ROI = depth_data[y : y + h, x : x + w]
-    scene_depth = np.mean(depth_ROI[depth_ROI != 0])
-    projector.move_to_focus(scene_depth)
-
-    aligned_empty = projector.apply_matrix(projector.empty_frame, matrix)
+    scene_depth, matrix, (x, y, w, h) = projector.start_no_calibration()
+    print(f"Scene Depth: {scene_depth}")
 
     while True:
         try:

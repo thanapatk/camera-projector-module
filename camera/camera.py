@@ -6,7 +6,7 @@ from utils.singleton import singleton
 class CameraConfig:
     CALIBRATION_MODE = {
         rs.option.enable_auto_exposure: False,
-        rs.option.exposure: 100.0,
+        rs.option.exposure: 300.0,
         rs.option.gain: 7,
         rs.option.brightness: -64.0,
         rs.option.contrast: 100.0,
@@ -102,6 +102,18 @@ class Camera:
             self.post_process_depth_frame(aligned_frames.get_depth_frame()),
             aligned_frames.get_color_frame(),
         )
+
+    def get_color_frame(self):
+        frames = self.pipeline.wait_for_frames()
+
+        return frames.get_color_frame()
+
+    def get_depth_frame(self):
+        frames = self.pipeline.wait_for_frames()
+
+        aligned_frames = self.align.process(frames)
+
+        return self.post_process_depth_frame(aligned_frames.get_depth_frame())
 
     def post_process_depth_frame(self, depth_frame):
         """
