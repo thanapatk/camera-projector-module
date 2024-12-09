@@ -31,3 +31,18 @@ class KalmanFilter:
         K = self.P @ self.H.T @ np.linalg.inv(S)  # Kalman gain
         self.state += K @ y  # Update state estimate
         self.P = (np.eye(len(self.state)) - K @ self.H) @ self.P  # Update covariance
+
+    @staticmethod
+    def stabilize_angle(rect):
+        center, size, angle = rect
+        width, height = size
+
+        # Normalize: Ensure width >= height
+        if width < height:
+            width, height = height, width
+            angle += 90  # Adjust the angle when swapping dimensions
+
+        # Normalize angle to [-90, 90)
+        angle %= 360
+
+        return (center, (width, height), angle)
