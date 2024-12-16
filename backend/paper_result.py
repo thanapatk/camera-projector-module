@@ -140,6 +140,11 @@ def run_projector(projector_started, to_ws, from_ws):
     ):
         return
 
+    with open(f"paper_result_{scene_depth}.csv", "w") as f:
+        f.write(
+            "object_depth,motor_step,tx,ty,scale_bias,center_x,center_y,scale,width,height"
+        )
+
     while True:
         # handle commands from ws
         if not from_ws.empty():
@@ -194,14 +199,14 @@ def run_projector(projector_started, to_ws, from_ws):
             continue
 
         # Update motor position according to object depth
-        if len(object_depths) == 0:
-            projector.move_to_focus(object_depth)
-        else:
-            avg_object_depth = np.mean(object_depths, dtype=float)
-            if not (avg_object_depth - 2 <= object_depth <= avg_object_depth + 2):
-                projector.move_to_focus(object_depth)
+        # if len(object_depths) == 0:
+        projector.move_to_focus(object_depth)
+        # else:
+        #     avg_object_depth = np.mean(object_depths, dtype=float)
+        #     if not (avg_object_depth - 2 <= object_depth <= avg_object_depth + 2):
+        #         projector.move_to_focus(object_depth)
 
-        object_depths.append(object_depth)
+        # object_depths.append(object_depth)
 
         # Find contour of the closest plane
         contours, _ = cv2.findContours(
@@ -217,8 +222,8 @@ def run_projector(projector_started, to_ws, from_ws):
             rect = rect_kf.stabilize_angle(rect)
 
             # Transform the rect from camera's reference frame to projector's reference frame
-            center, dimensions, angle, _ = projector.transform_rect(
-                scene_depth, np.mean(object_depths, dtype=float), rect, matrix
+            center, dimensions, angle, transform_prediction = projector.transform_rect(
+                scene_depth, object_depth, rect, matrix
             )
 
             # Get the smoothed rect from Kalman filter and update its state
@@ -356,6 +361,8 @@ def run_projector(projector_started, to_ws, from_ws):
                 )
 
             projector.add_frame(output_img)
+            with open("paper_result.csv", "a+") as f:
+                f.write(f"{object_depth},")
 
 
 if __name__ == "__main__":

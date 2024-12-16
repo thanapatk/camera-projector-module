@@ -433,7 +433,9 @@ class Projector:
         object_depth: float,
         rect: Tuple[Tuple[float, float], Tuple[float, float], float],
         matrix: np.ndarray,
-    ) -> Tuple[Tuple[float, float], Tuple[float, float], float]:
+    ) -> Tuple[
+        Tuple[float, float], Tuple[float, float], float, Tuple[float, float, float]
+    ]:
         """
         Apply scaling and a homography transformation to a rotated rectangle.
 
@@ -444,7 +446,7 @@ class Projector:
             matrix (np.ndarray): The homography matrix to apply.
 
         Returns:
-            Tuple[Tuple[float, float], Tuple[float, float], float]: The transformed rectangle in (center, (width, height), angle) format.
+            Tuple[Tuple[float, float], Tuple[float, float], float, Tuple[float, float, float]]: The transformed rectangle with bias in (center, (width, height), angle, (tx, ty, bias)) format.
         """
         if not self.contour_transformer:
             raise Exception("No Contour Transformer")
@@ -493,7 +495,12 @@ class Projector:
 
         (x, y), (width, height), angle = transformed_rect
 
-        return ((x + tx, y + ty), (width * scale, height * scale), angle)
+        return (
+            (x + tx, y + ty),
+            (width * scale, height * scale),
+            angle,
+            (tx, ty, bias),
+        )
 
     def move_to_focus(self, depth: float):
         self.stepper_controller.move_to_step(self.get_approx_step(depth))
