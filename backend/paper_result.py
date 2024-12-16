@@ -362,7 +362,10 @@ def run_projector(projector_started, to_ws, from_ws):
 
             projector.add_frame(output_img)
             with open("paper_result.csv", "a+") as f:
-                f.write(f"{object_depth},")
+                # object_depth,motor_step,tx,ty,scale_bias,center_x,center_y,scale,width,height
+                f.write(
+                    f"{object_depth},{controller.step},{','.join(map(str, transform_prediction))},{','.join(map(str, predicted_rect[0]))}"
+                )
 
 
 if __name__ == "__main__":
